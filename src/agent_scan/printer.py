@@ -159,18 +159,23 @@ def get_max_severity(
 
 
 def format_issue(issue: Issue) -> str:
-    issue_str = rf"● \[{issue.code} {get_severity(issue)}]: "
+    severity = get_severity(issue)
+    color_open = SEVERITY_COLOR_MAP[severity]
+    color_close = color_open.replace("[", "[/")
+
+    prefix = rf"● \[{issue.code} {severity}]:"
 
     if issue.code in ["W015", "W016", "W017", "W018"] and issue.extra_data is not None and "reason" in issue.extra_data:
-        issue_str += f"{issue.message} Reason: {issue.extra_data['reason']}"
+        body = f"{issue.message} Reason: {issue.extra_data['reason']}"
     elif issue.code == "W001" and issue.extra_data is not None and "words" in issue.extra_data:
         words = ",".join([f'"{w}"' for w in issue.extra_data["words"]])
-        issue_str += f"Found the word{'s' if len(issue.extra_data['words']) > 1 else ''} {words} in the tool description. It is a common word used in prompt injection attacks."
+        body = f"Found the word{'s' if len(issue.extra_data['words']) > 1 else ''} {words} in the tool description. It is a common word used in prompt injection attacks."
     else:
-        issue_str += f"{issue.message}"
-    return (
-        SEVERITY_COLOR_MAP[get_severity(issue)] + issue_str + SEVERITY_COLOR_MAP[get_severity(issue)].replace("[", "[/")
-    )
+        body = issue.message
+
+    # Only color the severity prefix; keep the message body in the default
+    # color so long descriptions remain readable.
+    return f"{color_open}{prefix}{color_close} {body}"
 
 
 def format_issues(issues: list[Issue], new_line: bool = False) -> str:
