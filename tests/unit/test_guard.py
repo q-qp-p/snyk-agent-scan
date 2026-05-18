@@ -1101,7 +1101,7 @@ class TestManagedPathConstants:
         assert CURSOR_MANAGED_HOOKS_PATH.name == "hooks.json"
 
     def test_codex_managed_filename(self):
-        assert CODEX_MANAGED_HOOKS_PATH.name == "hooks.json"
+        assert CODEX_MANAGED_HOOKS_PATH.name == "requirements.toml"
 
     @pytest.mark.skipif(sys.platform != "darwin", reason="macOS-specific paths")
     def test_macos_claude_managed_path(self):
@@ -1128,6 +1128,15 @@ class TestManagedPathConstants:
     def test_windows_cursor_managed_path(self):
         assert "Cursor" in str(CURSOR_MANAGED_HOOKS_PATH)
         assert "hooks.json" in str(CURSOR_MANAGED_HOOKS_PATH)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix-specific path")
+    def test_unix_codex_managed_path(self):
+        assert str(CODEX_MANAGED_HOOKS_PATH) == "/etc/codex/requirements.toml"
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific paths")
+    def test_windows_codex_managed_path(self):
+        assert "Codex" in str(CODEX_MANAGED_HOOKS_PATH)
+        assert "requirements.toml" in str(CODEX_MANAGED_HOOKS_PATH)
 
 
 class TestManagedInstallClaude:
@@ -1447,6 +1456,93 @@ class TestDetectCodex:
         assert info["tenant_id"] == "tid-1"
         assert info["host"] == "api.snyk.io"
         assert set(info["events"]) == set(CODEX_HOOK_EVENTS)
+
+
+# ===================================================================
+# Codex managed: requirements.toml install / uninstall / detect
+# ===================================================================
+
+
+class TestCodexManagedRequirementsToml:
+    def _import_managed_helpers(self):
+        from agent_scan.guard import (
+            _detect_codex_managed_install,
+            _install_codex_managed,
+            _render_codex_requirements_toml,
+            _uninstall_codex_managed,
+        )
+
+        return (
+            _install_codex_managed,
+            _uninstall_codex_managed,
+            _detect_codex_managed_install,
+            _render_codex_requirements_toml,
+        )
+
+    def test_render_contains_features_and_all_events(self, tmp_path):
+        _, _, _, render = self._import_managed_helpers()
+        path = tmp_path / "requirements.toml"
+        content = render(CODEX_AGENT_SCAN_CMD, path)
+        assert "[features]" in content
+        assert "hooks = true" in content
+        assert "[hooks]" in content
+        assert "managed_dir" in content
+        assert "windows_managed_dir" in content
+        for event in CODEX_HOOK_EVENTS:
+            assert f"[[hooks.{event}]]" in content
+            assert f"[[hooks.{event}.hooks]]" in content
+
+    def test_install_writes_toml(self, tmp_path):
+        install, _, _, _ = self._import_managed_helpers()
+        path = tmp_path / "requirements.toml"
+        script = tmp_path / "hooks" / "snyk-agent-guard.sh"
+        changed = install(CODEX_AGENT_SCAN_CMD, path, script)
+        assert changed
+        text = path.read_text()
+        assert "PUSH_KEY" in text
+        assert CODEX_AGENT_SCAN_CMD in text
+
+    def test_install_idempotent(self, tmp_path):
+        install, _, _, _ = self._import_managed_helpers()
+        path = tmp_path / "requirements.toml"
+        script = tmp_path / "hooks" / "snyk-agent-guard.sh"
+        install(CODEX_AGENT_SCAN_CMD, path, script)
+        assert install(CODEX_AGENT_SCAN_CMD, path, script) is False
+
+    def test_detect_after_install(self, tmp_path):
+        install, _, detect, _ = self._import_managed_helpers()
+        path = tmp_path / "requirements.toml"
+        script = tmp_path / "hooks" / "snyk-agent-guard.sh"
+        install(CODEX_AGENT_SCAN_CMD, path, script)
+
+        info = detect(path)
+        assert info is not None
+        assert info["auth_value"] == "pk-codex"
+        assert info["tenant_id"] == "tid-1"
+        assert set(info["events"]) == set(CODEX_HOOK_EVENTS)
+
+    def test_detect_dispatches_via_extension(self, tmp_path):
+        install, _, _, _ = self._import_managed_helpers()
+        path = tmp_path / "requirements.toml"
+        script = tmp_path / "hooks" / "snyk-agent-guard.sh"
+        install(CODEX_AGENT_SCAN_CMD, path, script)
+
+        info = _detect_codex_install(path)
+        assert info is not None
+        assert info["auth_value"] == "pk-codex"
+
+    def test_uninstall_removes_file(self, tmp_path):
+        install, uninstall, _, _ = self._import_managed_helpers()
+        path = tmp_path / "requirements.toml"
+        script = tmp_path / "hooks" / "snyk-agent-guard.sh"
+        install(CODEX_AGENT_SCAN_CMD, path, script)
+        assert path.exists()
+        uninstall(path)
+        assert not path.exists()
+
+    def test_uninstall_missing_file_is_noop(self, tmp_path):
+        _, uninstall, _, _ = self._import_managed_helpers()
+        uninstall(tmp_path / "requirements.toml")  # should not raise
 
 
 @pytest.mark.skipif(IS_WINDOWS, reason="bash script; skipped on Windows")

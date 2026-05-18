@@ -37,18 +37,20 @@ CURSOR_HOOKS_PATH = Path.home() / ".cursor" / "hooks.json"
 CODEX_HOOKS_PATH = Path.home() / ".codex" / "hooks.json"
 
 # Managed (MDM / admin-deployed) config paths — OS-specific
+# Codex managed hooks use a requirements.toml file at a system location
+# (see https://developers.openai.com/codex/hooks#managed-hooks-from-requirementstoml).
 if sys.platform == "darwin":
     CLAUDE_MANAGED_SETTINGS_PATH = Path("/Library/Application Support/ClaudeCode/managed-settings.json")
     CURSOR_MANAGED_HOOKS_PATH = Path("/Library/Application Support/Cursor/hooks.json")
-    CODEX_MANAGED_HOOKS_PATH = Path("/Library/Application Support/Codex/hooks.json")
+    CODEX_MANAGED_HOOKS_PATH = Path("/etc/codex/requirements.toml")
 elif sys.platform == "win32":
     CLAUDE_MANAGED_SETTINGS_PATH = Path("C:/Program Files/ClaudeCode/managed-settings.json")
     CURSOR_MANAGED_HOOKS_PATH = Path("C:/ProgramData/Cursor/hooks.json")
-    CODEX_MANAGED_HOOKS_PATH = Path("C:/ProgramData/Codex/hooks.json")
+    CODEX_MANAGED_HOOKS_PATH = Path("C:/ProgramData/OpenAI/Codex/requirements.toml")
 else:  # Linux and others
     CLAUDE_MANAGED_SETTINGS_PATH = Path("/etc/claude-code/managed-settings.json")
     CURSOR_MANAGED_HOOKS_PATH = Path("/etc/cursor/hooks.json")
-    CODEX_MANAGED_HOOKS_PATH = Path("/etc/codex/hooks.json")
+    CODEX_MANAGED_HOOKS_PATH = Path("/etc/codex/requirements.toml")
 
 CLAUDE_HOOK_EVENTS = [
     "PreToolUse",
@@ -274,7 +276,10 @@ def _install_hooks(
     elif client == "cursor":
         config_changed = _install_cursor(command, config_path)
     elif client == "codex":
-        config_changed = _install_codex(command, config_path)
+        if _is_codex_requirements_toml(config_path):
+            config_changed = _install_codex_managed(command, config_path, dest_path)
+        else:
+            config_changed = _install_codex(command, config_path)
 
     if script_updated or config_changed or minted:
         rich.print(f"[green]\u2713[/green]  {scope.title()} hooks installed for [bold]{label}[/bold]")
@@ -367,6 +372,111 @@ def _install_codex(command: str, path: Path) -> bool:
     return True
 
 
+def _is_codex_requirements_toml(path: Path) -> bool:
+    return path.suffix.lower() == ".toml"
+
+
+def _codex_managed_dirs(config_path: Path) -> tuple[str, str]:
+    """Return (managed_dir, windows_managed_dir) values to embed in requirements.toml.
+
+    The current platform's value is derived from the config_path so the script
+    location stays consistent with where _copy_hook_script writes it. The
+    other-platform value uses the canonical Codex system path.
+    """
+    hooks_dir = (config_path.parent / "hooks").as_posix()
+    if IS_WINDOWS:
+        windows_managed_dir = str(config_path.parent / "hooks")
+        managed_dir = "/etc/codex/hooks"
+        return managed_dir, windows_managed_dir
+    managed_dir = hooks_dir
+    windows_managed_dir = r"C:\ProgramData\OpenAI\Codex\hooks"
+    return managed_dir, windows_managed_dir
+
+
+def _render_codex_requirements_toml(command: str, config_path: Path) -> str:
+    """Generate the requirements.toml content for managed Codex hooks."""
+    managed_dir, windows_managed_dir = _codex_managed_dirs(config_path)
+    lines = [
+        "[features]",
+        "hooks = true",
+        "",
+        "[hooks]",
+        f'managed_dir = "{managed_dir}"',
+        f"windows_managed_dir = '{windows_managed_dir}'",
+        "",
+    ]
+    escaped = command.replace("\\", "\\\\").replace('"', '\\"')
+    for event in CODEX_HOOK_EVENTS:
+        lines.append(f"[[hooks.{event}]]")
+        lines.append(f"[[hooks.{event}.hooks]]")
+        lines.append('type = "command"')
+        lines.append(f'command = "{escaped}"')
+        lines.append("")
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def _install_codex_managed(command: str, path: Path, script_path: Path) -> bool:
+    """Write Codex managed hooks as requirements.toml. Returns True if changed."""
+    new_content = _render_codex_requirements_toml(command, path)
+    if path.exists() and path.read_text() == new_content:
+        return False
+    if path.exists():
+        _backup_file(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(new_content)
+    rich.print(f"[green]✓[/green]  Written [dim]{path}[/dim]")
+    return True
+
+
+def _parse_codex_requirements_toml(text: str) -> tuple[list[str], str | None]:
+    """Extract Snyk Agent Guard events and the first matching command from requirements.toml.
+
+    Returns (events, command). Only scans hook command lines containing the
+    agent-guard detection marker.
+    """
+    events: list[str] = []
+    found_cmd: str | None = None
+    current_event: str | None = None
+    header_re = re.compile(r"^\[\[hooks\.([A-Za-z]+)(?:\.hooks)?\]\]\s*$")
+    command_re = re.compile(r'^command\s*=\s*"((?:[^"\\]|\\.)*)"\s*$')
+    for raw in text.splitlines():
+        line = raw.strip()
+        m = header_re.match(line)
+        if m:
+            current_event = m.group(1)
+            continue
+        m = command_re.match(line)
+        if m and current_event:
+            cmd = m.group(1).encode("utf-8").decode("unicode_escape")
+            if _is_agent_scan_command(cmd) and current_event not in events:
+                events.append(current_event)
+                if found_cmd is None:
+                    found_cmd = cmd
+    return events, found_cmd
+
+
+def _detect_codex_managed_install(path: Path) -> dict | None:
+    text = path.read_text()
+    events, found_cmd = _parse_codex_requirements_toml(text)
+    if not events or found_cmd is None:
+        return None
+    return _parse_command_info(found_cmd, events)
+
+
+def _uninstall_codex_managed(path: Path) -> None:
+    if not path.exists():
+        rich.print("[dim]No requirements.toml found. Nothing to uninstall.[/dim]")
+        return
+    text = path.read_text()
+    events, _ = _parse_codex_requirements_toml(text)
+    if not events:
+        rich.print("[dim]No Agent Guard hooks found.[/dim]")
+        return
+    _backup_file(path)
+    path.unlink()
+    rich.print(f"[green]✓[/green]  Removed {len(events)} Agent Guard hook(s) (deleted [dim]{path}[/dim])")
+
+
 # ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
@@ -397,7 +507,10 @@ def _run_uninstall(args) -> None:
     elif client == "cursor":
         _uninstall_cursor(config_path)
     elif client == "codex":
-        _uninstall_codex(config_path)
+        if _is_codex_requirements_toml(config_path):
+            _uninstall_codex_managed(config_path)
+        else:
+            _uninstall_codex(config_path)
 
     # Remove hook script
     _remove_hook_script(client, config_path)
@@ -602,6 +715,8 @@ def _detect_claude_install(path: Path = CLAUDE_SETTINGS_PATH) -> dict | None:
 def _detect_codex_install(path: Path = CODEX_HOOKS_PATH) -> dict | None:
     if not path.exists():
         return None
+    if _is_codex_requirements_toml(path):
+        return _detect_codex_managed_install(path)
     data = _read_json_or_empty(path)
     hooks = data.get("hooks", {})
 
