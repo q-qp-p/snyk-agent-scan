@@ -1,4 +1,6 @@
-from agent_scan.printer import format_servers_line
+from mcp.types import Prompt, Tool
+
+from agent_scan.printer import format_entity_line, format_servers_line
 
 
 class TestFormatServersLine:
@@ -40,3 +42,40 @@ class TestFormatServersLine:
     def test_server_name_is_included(self):
         result = format_servers_line("my-server", severities=["high"]).plain
         assert "my-server" in result
+
+
+class TestFormatEntityLine:
+    def test_skill_instruction_has_space_before_name(self):
+        entity = Prompt(name="SKILL.md", description=None)
+        result = format_entity_line(entity, issues=[], is_skill=True).plain
+        assert "instruction SKILL.md" in result
+        assert "instructionSKILL.md" not in result
+
+    def test_skill_script_has_space_before_name(self):
+        entity = Tool(name="run.sh", description=None, inputSchema={"type": "object"})
+        result = format_entity_line(entity, issues=[], is_skill=True).plain
+        assert "script" in result
+        assert "run.sh" in result
+        assert "scriptrun.sh" not in result
+
+    def test_non_skill_tool_has_space_before_name(self):
+        entity = Tool(name="my_tool", description=None, inputSchema={"type": "object"})
+        result = format_entity_line(entity, issues=[], is_skill=False).plain
+        assert "tool" in result
+        assert "my_tool" in result
+        assert "toolmy_tool" not in result
+
+    def test_non_skill_prompt_has_space_before_name(self):
+        entity = Prompt(name="my_prompt", description=None)
+        result = format_entity_line(entity, issues=[], is_skill=False).plain
+        assert "prompt" in result
+        assert "my_prompt" in result
+        assert "promptmy_prompt" not in result
+
+    def test_full_description_skill_still_has_space(self):
+        # With full_description=True the name isn't right-padded, so the type
+        # padding is the only thing keeping it separated from the name.
+        entity = Prompt(name="SKILL.md", description=None)
+        result = format_entity_line(entity, issues=[], is_skill=True, full_description=True).plain
+        assert "instruction SKILL.md" in result
+        assert "instructionSKILL.md" not in result

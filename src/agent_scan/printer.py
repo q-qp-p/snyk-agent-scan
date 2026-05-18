@@ -213,9 +213,9 @@ def format_entity_line(
             name = name[: (max_name_length - 3)] + "..."
         name = name + " " * (max_name_length - len(name))
 
-    # right-pad type
+    # right-pad type (with at least one trailing space so it never abuts the name)
     type_str = format_entity_type(entity, is_skill)
-    type_str = type_str + " " * (len("instruction") - len(type_str))
+    type_str = type_str + " " * (len("instruction") + 1 - len(type_str))
     # prompt     / instruction
     # tool       / script
     # resouce    / asset
