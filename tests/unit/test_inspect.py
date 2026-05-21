@@ -665,7 +665,7 @@ async def test_inspect_client_skips_server_per_runtime_config_without_starting_s
 
     skipped_ext = next(e for e in extensions if e.name == "entra-mcp-proxy")
     assert isinstance(skipped_ext.signature_or_error, SkippedByRuntimeConfigError)
-    assert skipped_ext.signature_or_error.is_failure is False
+    assert skipped_ext.signature_or_error.is_failure is True
     assert "entra-mcp-proxy" in (skipped_ext.signature_or_error.message or "")
 
     # Sanity: the non-skipped server did go through inspect_extension exactly once.
