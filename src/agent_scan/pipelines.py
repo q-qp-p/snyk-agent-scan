@@ -5,6 +5,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from agent_scan.agent_discovery import find_discoverers
 from agent_scan.direct_scanner import direct_scan_to_server_config, is_direct_scan
 from agent_scan.inspect import (
     get_mcp_config_per_client,
@@ -82,12 +83,40 @@ async def discover_clients_to_inspect(
                     )
                 )
     else:
+        # Phase A — legacy path. Runs for EVERY well-known client including Claude Code.
         for client in get_well_known_clients():
             ctis = await get_mcp_config_per_client(client, home_dirs_with_users)
             if ctis:
                 clients_to_inspect.extend(ctis)
             else:
                 logger.info(f"Client {client.name} does not exist on this machine. {client.client_exists_paths}")
+
+        # Phase B — ABC path. Runs sequentially after Phase A and merges into its output.
+        for home_directory, username in home_dirs_with_users:
+            for discoverer in find_discoverers(home_directory):
+                try:
+                    cti = discoverer.discover()
+                except Exception:
+                    logger.exception("Discoverer %s.discover() raised; skipping", type(discoverer).__name__)
+                    continue
+                if cti is None:
+                    continue
+                cti.username = username
+                existing = next(
+                    (c for c in clients_to_inspect if c.name == cti.name and c.username == cti.username),
+                    None,
+                )
+                if existing is None:
+                    clients_to_inspect.append(cti)
+                else:
+                    # Dict union: legacy keys first (insertion order), ABC keys appended.
+                    # ABC values win on key collision (e.g., both phases emit a server
+                    # under ``~/.claude.json``). Distinct keys from each phase coexist
+                    # — same-name servers under different keys are kept as separate
+                    # registrations (e.g., the same ``github`` server configured in
+                    # two projects must both reach the inspector).
+                    existing.mcp_configs = {**existing.mcp_configs, **cti.mcp_configs}
+                    existing.skills_dirs = {**existing.skills_dirs, **cti.skills_dirs}
 
     # Only report usernames where an agent was detected in their home directory.
     # When no usernames were associated with detected agents:
