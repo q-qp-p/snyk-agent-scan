@@ -365,13 +365,13 @@ def skip_stdio_handshake(args) -> bool:
     command = getattr(args, "command", None)
     if command == "inspect":
         return False
-    has_push_key = command == "evo" or bool(get_push_key(getattr(args, "control_servers", []) or []))
-    if not has_push_key:
-        return False
     ci_dangerous_override = bool(getattr(args, "ci", False)) and bool(
         getattr(args, "dangerously_run_mcp_servers", False)
     )
-    return not ci_dangerous_override
+    if ci_dangerous_override:
+        return False
+    has_push_key = command == "evo" or bool(get_push_key(getattr(args, "control_servers", []) or []))
+    return has_push_key
 
 
 def resolve_server_io_default(args) -> None:
