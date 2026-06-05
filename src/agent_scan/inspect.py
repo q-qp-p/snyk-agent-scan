@@ -298,7 +298,7 @@ async def inspect_client(
     *,
     stream_stderr: bool = False,
     declined_servers: set[tuple[str, str]] | None = None,
-    skip_stdio_handshake: bool = False,
+    do_stdio_handshake: bool = False,
 ) -> InspectedClient:
     """
     Scan a client (Cursor, VSCode, etc.) and return a InspectedClient object.
@@ -307,10 +307,10 @@ async def inspect_client(
     pairs the user declined during the consent flow. Declined stdio servers are
     not started. They are recorded as errors with category user_declined.
 
-    skip_stdio_handshake when True suppresses the MCP handshake for every
-    stdio server (no subprocess is started). Remote servers are still
-    contacted. This is the push-key path. Skill scanning is unaffected since
-    skills do not handshake.
+    do_stdio_handshake when False, every stdio server is recorded with
+    ``signature_or_error=None`` (configured but not inspected) and no
+    subprocess is started. Remote servers and skills are unaffected
+    - they never handshake.
     """
     declined = declined_servers or set()
     extensions: dict[
@@ -324,7 +324,8 @@ async def inspect_client(
         extensions_for_mcp_config: list[InspectedExtensions] = []
         runtime_cfg = get_runtime_config()
         for name, server in mcp_configs:
-            # Skip servers that the user declined during the consent flow.
+            # Possible cases where we skip scanning a server:
+            # 1. Skip servers that the user declined during the consent flow.
             if (mcp_config_path, name) in declined:
                 extensions_for_mcp_config.append(
                     InspectedExtensions(
@@ -337,10 +338,7 @@ async def inspect_client(
                     )
                 )
                 continue
-            if skip_stdio_handshake and isinstance(server, StdioServer):
-                extensions_for_mcp_config.append(InspectedExtensions(name=name, config=server, signature_or_error=None))
-                continue
-            # Bootstrap runtime config skips short-circuit before inspect_extension so we
+            # 2. Bootstrap runtime config skips short-circuit before inspect_extension so we
             # never start the subprocess / open the connection.
             needle = runtime_cfg.matched_skip_needle(name, server)
             if needle is not None:
@@ -361,6 +359,10 @@ async def inspect_client(
                         ),
                     )
                 )
+                continue
+            # 3. If do_stdio_handshake is False, skip stdio servers.
+            if not do_stdio_handshake and isinstance(server, StdioServer):
+                extensions_for_mcp_config.append(InspectedExtensions(name=name, config=server, signature_or_error=None))
                 continue
             extension = await inspect_extension(
                 name,

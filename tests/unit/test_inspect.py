@@ -659,7 +659,14 @@ async def test_inspect_client_skips_server_per_runtime_config_without_starting_s
 
         mock_inspect_extension.side_effect = fake_inspect
 
-        result = await inspect_client(client, timeout=10, tokens=[], scan_skills=False)
+        # ``do_stdio_handshake=True`` so the kept server actually reaches
+        # ``inspect_extension``. Without this, the safe-default kwarg
+        # would short-circuit *both* stdio servers and the test couldn't
+        # distinguish "skipped by runtime_config" from "skipped by
+        # safe-default kwarg" — the regression we want to guard against
+        # is specifically that runtime_config skip *also* prevents the
+        # subprocess even on the handshake-enabled path.
+        result = await inspect_client(client, timeout=10, tokens=[], scan_skills=False, do_stdio_handshake=True)
 
     extensions = result.extensions["/cfg.json"]
     assert len(extensions) == 2
@@ -675,16 +682,20 @@ async def test_inspect_client_skips_server_per_runtime_config_without_starting_s
 
 
 @pytest.mark.asyncio
-async def test_inspect_client_skip_stdio_handshake_short_circuits_stdio_servers():
-    """The push-key (CI/MDM) path must not start any stdio subprocess.
+async def test_inspect_client_default_does_not_handshake_stdio_servers():
+    """The default behavior (no ``do_stdio_handshake`` kwarg) must NOT start
+    any stdio subprocess. This is the load-bearing safe-default property:
+    spawning subprocesses from a user config is the dangerous action, so
+    every caller must explicitly opt in.
 
-    With ``skip_stdio_handshake=True`` every stdio server is recorded on
-    the InspectedExtensions list with ``signature_or_error=None`` and
-    ``inspect_extension`` is only invoked for remote MCP servers (skills do
-    not flow through this code path). Subprocess avoidance is the
-    load-bearing property: ``inspect_extension`` being called for a stdio
-    server would defeat the unattended-safety guarantee, so the test fails
-    loudly in that case.
+    A caller that forgets to forward ``do_stdio_handshake=True`` falls
+    through to this safe path: every stdio server is recorded on the
+    InspectedExtensions list with ``signature_or_error=None``, and
+    ``inspect_extension`` is only invoked for remote MCP servers (skills
+    do not flow through this code path). The test installs a side_effect
+    that raises if ``inspect_extension`` is ever called for a stdio
+    server — so any future refactor that flips the default fails loudly
+    here.
 
     The downstream ``ServerScanResult`` exposes the skipped stdio server
     with both ``signature`` and ``error`` set to ``None`` — the configured
@@ -717,7 +728,7 @@ async def test_inspect_client_skip_stdio_handshake_short_circuits_stdio_servers(
 
             if isinstance(server, StdioServer):
                 raise AssertionError(
-                    f"inspect_extension must not be called for stdio server {name!r} on the push-key path"
+                    f"inspect_extension must not be called for stdio server {name!r} on the default path"
                 )
             return InspectedExtensions(
                 name=name,
@@ -733,13 +744,9 @@ async def test_inspect_client_skip_stdio_handshake_short_circuits_stdio_servers(
 
         mock_inspect_extension.side_effect = fake_inspect
 
-        result = await inspect_client(
-            client,
-            timeout=10,
-            tokens=[],
-            scan_skills=False,
-            skip_stdio_handshake=True,
-        )
+        # Intentionally omit ``do_stdio_handshake`` to verify the safe
+        # default kicks in.
+        result = await inspect_client(client, timeout=10, tokens=[], scan_skills=False)
 
     extensions = result.extensions["/cfg.json"]
     assert len(extensions) == 3
@@ -753,7 +760,7 @@ async def test_inspect_client_skip_stdio_handshake_short_circuits_stdio_servers(
     assert remote_call_names == ["remote"]
 
     # ServerScanResult conversion preserves the server with no signature
-    # and no error for the push-key skip.
+    # and no error for the default-skipped stdio entries.
     scan_path_result = inspected_client_to_scan_path_result(result)
     by_name = {s.name: s for s in scan_path_result.servers or []}
     assert by_name["stdio-a"].signature is None
@@ -766,9 +773,12 @@ async def test_inspect_client_skip_stdio_handshake_short_circuits_stdio_servers(
 
 
 @pytest.mark.asyncio
-async def test_inspect_client_default_does_not_skip_stdio_handshake():
-    """Default behavior is unchanged: stdio servers still flow through
-    ``inspect_extension``. The skip is opt-in for the push-key path."""
+async def test_inspect_client_explicit_do_stdio_handshake_runs_stdio_servers():
+    """When the caller explicitly opts in via ``do_stdio_handshake=True``,
+    stdio servers flow through ``inspect_extension`` as expected. This
+    is the path taken by every command that wants real stdio handshakes
+    (interactive ``scan`` / ``inspect``, or ``--ci --dangerously-run-mcp-servers``
+    overriding the push-key skip)."""
     stdio = StdioServer(command="echo", args=["hi"])
 
     client = ClientToInspect(
@@ -795,6 +805,6 @@ async def test_inspect_client_default_does_not_skip_stdio_handshake():
             ),
         )
 
-        await inspect_client(client, timeout=10, tokens=[], scan_skills=False)
+        await inspect_client(client, timeout=10, tokens=[], scan_skills=False, do_stdio_handshake=True)
 
     mock_inspect_extension.assert_awaited_once()
