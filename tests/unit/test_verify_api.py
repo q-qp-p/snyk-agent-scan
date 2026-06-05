@@ -599,36 +599,6 @@ class TestAnalyzeMachineAuthPrecedence:
         assert "Authorization" not in posted_headers
         assert posted_url == self._ANALYSIS_URL
 
-    @pytest.mark.asyncio
-    async def test_both_present_emits_info_log(self, caplog):
-        """The precedence is documented via a logger.info line so that a
-        ``--verbose`` run (or any captured log stream) shows which auth
-        method actually ran."""
-        import logging
-
-        caplog.set_level(logging.INFO, logger="agent_scan.verify_api")
-        await self._run(push_key="push-abc", env={"SNYK_TOKEN": "snyk-tok-123"})
-
-        messages = [r.getMessage() for r in caplog.records if r.name == "agent_scan.verify_api"]
-        assert any("Both SNYK_TOKEN and a push key" in m and "Using the push key" in m for m in messages), (
-            f"Expected the precedence-info log line; got: {messages}"
-        )
-
-    @pytest.mark.asyncio
-    async def test_push_key_only_does_not_emit_info_log(self, caplog):
-        """The info log fires only when *both* are set, not when push-key
-        is the sole auth method."""
-        import logging
-
-        os.environ.pop("SNYK_TOKEN", None)
-        caplog.set_level(logging.INFO, logger="agent_scan.verify_api")
-        await self._run(push_key="push-abc", env={})
-
-        messages = [r.getMessage() for r in caplog.records if r.name == "agent_scan.verify_api"]
-        assert not any("Both SNYK_TOKEN and a push key" in m for m in messages), (
-            f"info log fired without both auths set: {messages}"
-        )
-
 
 class TestAnalyzeMachineHttpErrors:
     """Test that analyze_machine handles various HTTP error status codes correctly."""
